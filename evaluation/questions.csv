@@ -1,0 +1,6 @@
+question,expected_doc_type,expected_terms
+Qual é o fornecedor da invoice INV-1001?,invoice,alpha office supplies|inv-1001
+Qual é o valor total da invoice INV-2040?,invoice,12390.50|beta tech components
+Qual transportadora aparece no shipping order SHIP-5520?,shipping_order,fastlog transportes|ship-5520
+Quais itens estão com estoque citado no relatório STOCK-331?,inventory_report,ergonomic chairs|network switches
+Qual pedido de compra está relacionado à invoice INV-1001?,invoice,po-7781|inv-1001

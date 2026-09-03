@@ -1,0 +1,42 @@
+site_name: Projeto RAG - Documentos Corporativos
+site_description: O projeto simula um cenário comum de backoffice, onde documentos administrativos precisam ser consultados rapidamente para apoiar decisões em processos financeiros, compras, estoque, logística e ERP.
+site_author: Alexandre Kawamorita
+site_url: ""
+
+theme:
+  name: material
+  language: en
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src] 
+  - mkdocs-jupyter     
+
+nav:
+  - Início: index.md
+  - Arquitetura: architecture.md
+  - Instalação do Ambiente: environment_setup.md
+  - Avaliação: evaluation_report.md
+  - Monitoramento: monitoring.md
+  - Otimização de Tokens: otimizacao_tokens_rag.md
+  - Skills Desenvolvidas: portfolio_skills.md
+
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.inlinehilite
+
+plugins:
+  - search
+
+extra:
+  generator: false

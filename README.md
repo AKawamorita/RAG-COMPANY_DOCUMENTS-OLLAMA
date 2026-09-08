@@ -1,609 +1,402 @@
-# RAG para consulta inteligente de documentos corporativos
+# RAG para Documentos Corporativos
 
-Projeto de portfólio para consulta, sumarização e extração de informações de documentos administrativos usando **RAG**, **LangGraph**, **Redis Vector Search**, **busca híbrida**, **Groq/Ollama**, API e execução local com Docker Compose.
+Solução de **Retrieval-Augmented Generation (RAG)** para consulta de documentos corporativos, construída para recuperar evidências em arquivos CSV e PDF e gerar respostas objetivas, rastreáveis e limitadas ao conteúdo encontrado.
 
-O objetivo é demonstrar uma solução de IA aplicada capaz de responder com base em evidências recuperadas, informar as fontes utilizadas e recusar respostas quando o conteúdo disponível não for suficiente.
+O projeto combina **LangChain**, **LangGraph**, **Redis Vector Search**, busca híbrida, **Groq ou Ollama**, FastAPI, Streamlit, Pytest e monitoramento de métricas. O Redis é o banco vetorial principal; o ChromaDB permanece disponível como alternativa configurável para desenvolvimento e comparação.
 
-> **Status atual:** fluxo RAG, Redis, busca híbrida, fontes, fallback, avaliação controlada, API, Docker Compose e documentação implementados. Observabilidade com MLflow está planejada para a próxima versão.
+Este é uma atualizacao de um projeto anterior mais simples, ele nao usa redis e nem Docker, foi criado, apenas para verificar alguns conceitos e servir de base para este projeto.
+Este projeto possui um chavemento ChromaDB / Redis caso opte por Redis (que é o padrao deste projeto, voce deve ter o Redis instalado, estarei documentando o processo de instalacao, na documentacao do projeto MKDocs)
+Optei por docker swarm com 3 replicas.
+O computador usado é um laptop Ryzen 7 5700U com 32Gb de RAM.
 
-- Dataset: [Company Documents Dataset — Kaggle](https://www.kaggle.com/datasets/ayoubcherguelaine/company-documents-dataset)
-- Documentação e portfólio técnico: [akawamorita.github.io](https://akawamorita.github.io/)
+> Status atual: etapas 1 a 5 concluídas, documentação em atualização contínua e observabilidade/tracing com MLflow em implementação.
+![Roadmap](docs/img/roadMap.png)
 
----
 
-## 1. Visão geral
+## Objetivo
 
-O projeto processa documentos corporativos, como:
+Em consultas corporativas, uma busca exclusivamente semântica pode falhar ao localizar números de pedidos, invoices e outros identificadores. Este projeto trata esse problema combinando:
 
-- invoices;
-- purchase orders;
-- shipping orders;
-- inventory reports;
-- outros documentos administrativos em CSV ou PDF.
+- busca exata por IDs e códigos;
+- recuperação semântica por embeddings;
+- filtro opcional por tipo de documento;
+- avaliação da evidência antes da geração;
+- fallback quando o contexto não atinge a relevância mínima;
+- resposta acompanhada das fontes recuperadas;
+- proteção de entrada contra prompt injection e exposição acidental de segredos;
+- métricas de similaridade, latência, fallback, fontes e tokens estimados.
 
-A aplicação permite fazer perguntas em linguagem natural e combina duas estratégias de recuperação:
-
-1. **Busca exata por identificadores**, indicada para `order_id`, número de invoice e outros códigos presentes nos documentos.
-2. **Busca semântica**, indicada para perguntas descritivas, resumos e consultas sem um identificador explícito.
-
-Os documentos são indexados principalmente no **Redis Vector Search**. O ChromaDB permanece disponível como alternativa configurável para desenvolvimento e comparação.
-
-### Exemplo
-
-Pergunta:
-
-```text
-Faça um resumo da invoice referente ao order_id 10386.
-```
-
-Resposta esperada:
-
-```text
-Resumo da invoice referente ao order_id 10386:
-
-A fatura foi emitida para o cliente FAMIA em 18 de dezembro de 2016 e contém
-os produtos Guaraná Fantástica e Sasquatch Ale, totalizando R$ 166,00.
-
-Fontes usadas:
-- company-document-text.csv | tipo=invoice | linha=1363 | busca=exact_match
-- invoice_10386.pdf | tipo=invoice | busca=exact_match
-```
-
-Quando não há evidência suficiente, o fluxo retorna:
-
-```text
-Não encontrado no documento com evidência suficiente.
-```
-
----
-
-## 2. Entregas e evolução
-
-| Ordem | Entrega | Status | Importância |
-| ---: | --- | :---: | --- |
-| 1 | Fluxo LangGraph completo usando Redis | ✅ Concluído | Essencial |
-| 2 | Busca híbrida para IDs e semântica | ✅ Concluído | Essencial |
-| 3 | Respostas com fontes e fallback | ✅ Concluído | Essencial |
-| 4 | Avaliação com perguntas controladas | ✅ Concluído | Essencial |
-| 5 | Docker Compose com API | ✅ Concluído | Essencial |
-| 6 | README, arquitetura e resultados | ✅ Concluído | Essencial |
-| 7 | Observabilidade e tracing com MLflow | 🔄 Próxima versão | 
-| 8 | Dashboard e CI/CD | 📋 Planejado | Evolução |
-
----
-
-## 3. Arquitetura
+## Arquitetura
 
 ```mermaid
 flowchart TD
-    U[Usuário] --> I[Streamlit ou API]
-    I --> S[Sanitização]
-    S --> R[Retriever híbrido]
-    R --> E[Busca exata por ID]
-    R --> V[Busca semântica no Redis]
-    E --> G[Validação de evidência]
-    V --> G
-    G -->|Evidência suficiente| L[Groq ou Ollama]
-    G -->|Evidência insuficiente| F[Fallback controlado]
-    L --> O[Resposta com fontes]
-    F --> O
+    A["CSV e PDF"] --> B["Limpeza e chunking"]
+    B --> C["Embeddings"]
+    C --> D[("Redis Vector Search")]
+    Q["Pergunta"] --> E["LangGraph"]
+    E --> F["Busca exata e semântica"]
+    D --> F
+    F --> G{"Evidência suficiente?"}
+    G -->|Sim| H["Resposta com fontes"]
+    G -->|Não| I["Fallback controlado"]
+    H --> J["Logs e métricas"]
+    I --> J
 ```
 
-### Fluxo LangGraph
+O fluxo LangGraph é composto pelos nós:
 
-O LangGraph organiza a execução em etapas explícitas:
+1. `sanitize`: normaliza a pergunta e aplica as verificações de segurança;
+2. `retrieve`: executa a busca híbrida;
+3. `grade_evidence`: compara a similaridade média com o limite configurado;
+4. `generate`: consulta o LLM usando somente o contexto recuperado;
+5. `fallback`: devolve uma resposta controlada quando faltam evidências;
+6. `monitor`: registra métricas e informações da consulta em JSONL.
 
-1. sanitização da pergunta;
-2. identificação de IDs e intenção da consulta;
-3. recuperação híbrida do contexto;
-4. avaliação da evidência recuperada;
-5. geração da resposta ou acionamento do fallback;
-6. formatação da resposta com as fontes;
-7. registro de métricas operacionais.
+## Principais funcionalidades
 
-Essa estrutura torna o fluxo rastreável, testável e preparado para receber tracing com MLflow.
+### Ingestão de dados
 
-### Componentes
-
-| Componente | Responsabilidade |
-| --- | --- |
-| LangGraph | Orquestra os nós e as decisões do fluxo RAG |
-| Redis Vector Search | Armazena embeddings, metadados e executa a busca vetorial |
-| Retriever híbrido | Combina correspondência exata de IDs com similaridade semântica |
-| Hugging Face | Gera embeddings com `sentence-transformers/all-MiniLM-L6-v2` |
-| Groq/Ollama | Gera respostas usando o contexto recuperado |
-| API | Expõe o fluxo RAG para integração com outras aplicações |
-| Streamlit | Disponibiliza a interface de consulta e indicadores operacionais |
-| Docker Compose | Executa os serviços locais de maneira reproduzível |
-| RedisInsight | Permite inspecionar índices, chaves e documentos armazenados no Redis |
-
----
-
-## 4. Estrutura principal do projeto
-
-```text
-project-rag/
-├── data/
-│   ├── raw/
-│   └── processed/
-├── evaluation/
-│   └── questions.csv
-├── logs/
-├── notebooks/
-├── src/
-│   ├── __init__.py
-│   ├── config.py
-│   ├── embeddings_factory.py
-│   ├── ingest.py
-│   ├── retriever.py
-│   ├── rag_chain.py
-│   ├── evaluator.py
-│   ├── monitor.py
-│   ├── llm_security.py
-│   └── app.py
-├── tests/
-├── docs/
-├── .env.example
-├── .gitignore
-├── docker-compose.yml
-├── mkdocs.yml
-├── requirements.txt
-└── README.md
-```
-
-Arquivos principais:
-
-- `config.py`: centraliza configurações e variáveis de ambiente;
-- `embeddings_factory.py`: cria o modelo de embeddings configurado;
-- `ingest.py`: carrega, sanitiza, fragmenta e indexa os documentos;
-- `retriever.py`: seleciona Redis ou Chroma e executa a busca híbrida;
-- `rag_chain.py`: implementa o fluxo RAG com LangGraph;
-- `evaluator.py`: executa as perguntas controladas e consolida resultados;
-- `monitor.py`: registra e resume métricas operacionais;
-- `llm_security.py`: trata entradas e reduz riscos de prompt injection;
-- `app.py`: disponibiliza a interface Streamlit.
-
----
-
-## 5. Decisões técnicas
-
-### Redis como banco vetorial principal
-
-O Redis foi adotado como banco vetorial principal porque permite reunir busca vetorial, filtros por metadados e baixa latência em uma tecnologia amplamente utilizada em aplicações distribuídas. Uma instância separada poderá atuar como broker do Celery na próxima evolução.
+- Leitura recursiva de arquivos CSV e PDF.
+- Detecção automática das colunas de texto, tipo e origem nos CSVs.
+- Limpeza de caracteres nulos e espaços repetidos.
+- Chunking configurável com `RecursiveCharacterTextSplitter`.
+- Metadados de origem, arquivo, linha, página, tipo e chunk.
+- IDs SHA-256 determinísticos para reduzir duplicidades em reingestões.
+- Escrita em lotes no Redis.
+- Opção `--reset`, que remove somente o índice do RAG e seus documentos.
 
 ### Busca híbrida
 
-A similaridade semântica isolada pode não ser suficiente para códigos como `10386`, `INV-10386` ou outros identificadores. Por isso, o retriever:
+O `CorporateRetriever` combina dois mecanismos:
 
-- detecta identificadores presentes na pergunta;
-- prioriza correspondências exatas quando encontra um ID;
-- utiliza busca semântica para complementar o contexto;
-- remove resultados duplicados;
-- preserva metadados e scores para formar as fontes.
+1. **Busca exata:** extrai identificadores como `10707`, `INV-1001`, `PO-2024-001` e procura o valor literal no conteúdo.
+2. **Busca semântica:** recupera os chunks mais próximos por embeddings.
 
-### Respostas fundamentadas
+Os resultados são unidos, deduplicados e ordenados por score. Correspondências exatas recebem prioridade, o que melhora perguntas sobre `order_id`, invoice, purchase order e outros códigos administrativos.
 
-O modelo recebe somente o contexto recuperado e é instruído a não completar informações ausentes. Quando a evidência não atende aos critérios mínimos, o grafo segue para o fallback e não chama o caminho normal de geração.
+### Respostas fundamentadas e fallback
 
-### Provedores de LLM
+Antes de chamar o LLM, o grafo verifica se existem documentos e se a similaridade média alcança `MIN_RELEVANCE_SCORE`. Sem evidência suficiente, o sistema não tenta completar a resposta e informa que o conteúdo não foi encontrado.
 
-- **Groq:** opção externa para respostas mais rápidas durante o desenvolvimento.
-- **Ollama:** alternativa local, com maior privacidade e sem dependência de uma API externa.
+O prompt de sistema obriga o modelo a:
 
-O nome do modelo deve ser configurado no `.env` conforme os modelos disponíveis na conta Groq ou na instalação local do Ollama.
+- usar somente o contexto recuperado;
+- não inventar valores, datas, fornecedores ou identificadores;
+- ignorar instruções encontradas dentro dos documentos;
+- informar as fontes utilizadas.
 
----
+### Segurança
 
-## 6. Pré-requisitos
+A pergunta passa por duas camadas de proteção:
 
-- Python 3.10 ou superior;
-- Docker Desktop com Docker Compose;
-- conta e API key do Groq, caso esse provedor seja utilizado;
-- Ollama e um modelo local, caso o processamento local seja utilizado;
-- Git.
+- regras por expressão regular para ataques explícitos;
+- LLM Guard para texto invisível, segredos, limite de tokens e prompt injection.
 
-O modelo de embedding padrão é:
+Se a camada complementar estiver indisponível, a aplicação mantém a sanitização básica e registra um aviso. A validação de saída está estruturada em `llm_security.py`, mas ainda não está conectada ao nó de geração.
+
+### API e interface
+
+A FastAPI expõe:
+
+| Método | Endpoint | Finalidade |
+| --- | --- | --- |
+| `GET` | `/health` | Confirma que o processo HTTP está ativo. |
+| `GET` | `/ready` | Valida a inicialização do RAG. |
+| `POST` | `/api/v1/query` | Executa a consulta completa. |
+| `GET` | `/api/v1/vector-store/status` | Informa backend, índice e quantidade de chunks. |
+| `GET` | `/api/v1/monitor/summary` | Retorna as métricas agregadas. |
+
+O Streamlit pode operar de duas maneiras:
+
+- **API local:** consome a FastAPI, inclusive quando ambos estão no Docker;
+- **Direto no Streamlit:** instancia o RAG no próprio processo para desenvolvimento.
+
+A barra lateral mostra o banco vetorial ativo, a quantidade real de chunks e um indicador visual:
+
+- 🔴 base vazia;
+- 🟡 até o limite de atenção configurado;
+- 🟢 acima do limite.
+
+## Tecnologias
+
+- Python
+- LangChain e LangGraph
+- Redis Vector Search / RedisVL
+- ChromaDB como backend alternativo
+- Hugging Face ou Ollama Embeddings
+- Groq ou Ollama para geração
+- FastAPI e Pydantic
+- Streamlit
+- LLM Guard
+- Pandas e PyPDF
+- Pytest
+- Docker Compose
+- MLflow em implementação
+
+## Estrutura principal
 
 ```text
-sentence-transformers/all-MiniLM-L6-v2
+src/
+├── api.py                 # Endpoints FastAPI e contratos JSON
+├── app.py                 # Interface Streamlit
+├── config.py              # Configurações e variáveis de ambiente
+├── embeddings_factory.py  # Seleção dos embeddings
+├── evaluator.py           # Avaliação com perguntas controladas
+├── ingest.py              # Leitura, chunking e carga no Redis
+├── llm_factory.py         # Seleção Groq/Ollama
+├── llm_security.py        # Scanners de entrada e saída
+├── monitor.py             # Logs JSONL e métricas agregadas
+├── rag_chain.py           # Orquestração do fluxo LangGraph
+└── retriever.py           # Busca exata, vetorial e status do índice
 ```
 
-> Em máquinas sem GPU dedicada, modelos executados pelo Ollama podem apresentar maior tempo de resposta. O Groq pode ser usado no desenvolvimento mantendo o Redis e os demais serviços localmente.
+Outras pastas esperadas pelo código:
 
----
-
-## 7. Configuração
-
-Clone o repositório e acesse sua pasta:
-
-```bash
-git clone <URL_DO_REPOSITORIO>
-cd <PASTA_DO_REPOSITORIO>
+```text
+data/raw/                  # CSVs e PDFs de entrada
+data/processed/            # Resultados da avaliação
+evaluation/questions.csv   # Perguntas de controle
+logs/rag_queries.jsonl     # Telemetria local
+tests/                     # Testes Pytest
 ```
 
-Crie o arquivo de configuração a partir do exemplo:
+## Configuração
 
-### Windows PowerShell
+Crie um arquivo `.env` na raiz. O exemplo abaixo usa Redis, embeddings Hugging Face e Groq:
 
-```powershell
-Copy-Item .env.example .env
-```
+```dotenv
+VECTOR_STORE_PROVIDER=redis
 
-### Linux/macOS
-
-```bash
-cp .env.example .env
-```
-
-Configure o `.env` sem enviar credenciais ao repositório:
-
-```env
-LLM_PROVIDER=groq
-GROQ_API_KEY=sua_api_key
-GROQ_MODEL=seu_modelo_disponivel
+REDIS_URL=redis://localhost:6379
+REDIS_INDEX_NAME=company_documents_rag
+REDIS_KEY_PREFIX=company_documents_rag
+REDIS_BATCH_SIZE=100
+VECTOR_STORE_ATTENTION_LIMIT=100
 
 EMBEDDING_PROVIDER=huggingface
 HF_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
 
-VECTOR_STORE_PROVIDER=redis
+LLM_PROVIDER=groq
+GROQ_API_KEY=sua_chave
+GROQ_MODEL=modelo_disponivel_na_sua_conta
+
+CHUNK_SIZE=900
+CHUNK_OVERLAP=120
+RETRIEVAL_K=4
+MIN_RELEVANCE_SCORE=0.35
+
+RAW_DATA_DIR=data/raw
+LOGS_DIR=logs
 ```
 
-Para utilizar o Ollama, altere o provedor e informe um modelo já instalado:
+Para execução totalmente local, altere o provedor do LLM e use um modelo já instalado no Ollama:
 
-```env
+```dotenv
 LLM_PROVIDER=ollama
-OLLAMA_MODEL=seu_modelo_local
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_LLM_MODEL=gemma4:e4b
 ```
 
----
+> Modelos oferecidos por APIs podem ser descontinuados. Configure `GROQ_MODEL` com um modelo atualmente disponível na sua conta. Nunca grave a chave da Groq no código, no Dockerfile ou na imagem; injete-a pelo `.env` em tempo de execução.
 
-## 8. Execução com Docker Compose
+## Execução local
 
-Suba os serviços locais:
-
-```bash
-docker compose up --build -d
-```
-
-Verifique o estado dos containers:
-
-```bash
-docker compose ps
-```
-
-Valide o Redis Vector Search:
-
-```bash
-docker compose exec redis-vector redis-cli ping
-```
-
-Resposta esperada:
-
-```text
-PONG
-```
-
-Os serviços são executados na rede interna do Docker. As portas externas podem ser ajustadas no `docker-compose.yml`. Na configuração local adotada para o projeto, o RedisInsight pode ser acessado em:
-
-```text
-http://localhost:5540
-```
-
-Para acompanhar os logs:
-
-```bash
-docker compose logs -f
-```
-
-Para encerrar os containers sem apagar os volumes:
-
-```bash
-docker compose down
-```
-
-> Não utilize `docker compose down -v` quando quiser preservar os índices e documentos persistidos nos volumes.
-
----
-
-## 9. Execução local com Python
-
-### Windows PowerShell
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-```
-
-### Linux/macOS
+### 1. Criar o ambiente
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
+```
+
+Ative o ambiente virtual e instale as dependências:
+
+```bash
 python -m pip install -r requirements.txt
 ```
 
-### Ingestão
+### 2. Iniciar o Redis
 
-Coloque os documentos em `data/raw/` e execute:
+O Redis não precisa existir previamente quando é criado pelo Docker Compose. Ele precisa apenas estar ativo antes da ingestão. MongoDB não é uma dependência do código atual.
+
+### 3. Carregar os documentos
+
+Coloque os arquivos em `data/raw/` e execute:
 
 ```bash
 python -m src.ingest --reset
 ```
 
-Esse processo:
-
-- lê os arquivos suportados;
-- sanitiza o conteúdo;
-- cria chunks com seus metadados;
-- gera os embeddings;
-- recria o índice quando `--reset` é informado;
-- persiste os documentos no banco vetorial configurado.
-
-### Consulta pelo terminal
+Para acrescentar documentos sem recriar o índice:
 
 ```bash
-python -m src.rag_chain "Faça um resumo do order_id 10386"
+python -m src.ingest
 ```
 
-### Interface Streamlit
+Também é possível indicar outra pasta:
 
 ```bash
-python -m streamlit run src/app.py
+python -m src.ingest --data-dir caminho/para/documentos
 ```
 
-A interface permite:
+### 4. Consultar pela linha de comando
 
-- fazer perguntas em linguagem natural;
-- visualizar as fontes recuperadas;
-- identificar o banco vetorial em uso;
-- acompanhar a quantidade de registros indexados;
-- consultar indicadores operacionais.
-
-### API
-
-A API é iniciada pelo serviço correspondente no Docker Compose. Após iniciar os containers, consulte a rota de documentação configurada no projeto para testar o JSON retornado e os endpoints disponíveis.
-
----
-
-## 10. Dataset
-
-O projeto utiliza o [Company Documents Dataset](https://www.kaggle.com/datasets/ayoubcherguelaine/company-documents-dataset). Faça o download manualmente e coloque os arquivos em:
-
-```text
-data/raw/
+```bash
+python -m src.rag_chain "Me informe os dados do order_id 10386"
 ```
 
-O pipeline aceita:
+Com filtro por tipo:
 
-- CSVs com texto extraído;
-- PDFs organizados em pastas;
-- metadados como tipo do documento, arquivo de origem, linha e identificadores.
-
-O carregador tenta identificar colunas de texto como:
-
-```text
-text, extracted_text, ocr_text, content, document_text, texto
+```bash
+python -m src.rag_chain "Resuma o pedido 10386" --doc-type invoice --k 4
 ```
 
-E colunas de categoria como:
+### 5. Iniciar a API
 
-```text
-label, category, doc_type, document_type, type, class
+```bash
+uvicorn src.api:app --host 0.0.0.0 --port 8000
 ```
 
-Se o dataset utilizar nomes diferentes, ajuste o mapeamento em `src/ingest.py`.
+Documentação interativa: `http://localhost:8000/docs`.
 
----
+Exemplo de consulta:
 
-## 11. Avaliação controlada
+```bash
+curl -X POST "http://localhost:8000/api/v1/query" \
+  -H "Content-Type: application/json" \
+  -d '{"question":"Me informe os dados do order_id 10386","k":4}'
+```
 
-A avaliação utiliza perguntas conhecidas, respostas esperadas e casos sem evidência para validar o comportamento do pipeline.
+### 6. Iniciar o Streamlit
 
-Execute:
+```bash
+streamlit run src/app.py
+```
+
+## Execução com Docker Compose
+
+Construa as imagens e inicie os serviços:
+
+```bash
+docker compose up -d --build
+```
+
+Na configuração discutida para evitar conflito com uma porta `8000` já ocupada, a API usa o mapeamento:
+
+```yaml
+ports:
+  - "8001:8000"
+```
+
+Nesse cenário:
+
+- Swagger: `http://localhost:8001/docs`;
+- Streamlit: `http://localhost:8501`;
+- Redis Vector: `localhost:6379`;
+- RedisInsight: `http://localhost:5540`.
+
+Se a ingestão for executada dentro do container da API:
+
+```bash
+docker compose exec api python -m src.ingest --reset
+```
+
+Para trocar a chave ou o modelo da Groq, altere o `.env` e recrie os containers que consomem essas variáveis:
+
+```bash
+docker compose up -d --force-recreate api streamlit
+```
+
+Os volumes preservam o índice entre reinicializações. Um Redis Broker separado pode existir no Compose para uma evolução com Celery, mas não é consumido pelo código atual de `src/`.
+
+## Testes e avaliação
+
+Execute a suíte automatizada:
+
+```bash
+python -m pytest -q
+```
+
+Os testes do RAG podem ser executados diretamente sobre `CorporateRAG`, sem depender da interface Streamlit. Entre os cenários relevantes estão:
+
+- contrato serializável em JSON;
+- conexão e recuperação no Redis;
+- busca exata por `order_id`;
+- presença de fontes e metadados;
+- fallback quando não existe evidência suficiente;
+- similaridade e latência retornadas pelo fluxo.
+
+Para a avaliação controlada, prepare `evaluation/questions.csv` com as colunas:
+
+```csv
+question,expected_doc_type,expected_terms
+Me informe os dados do order_id 10386,invoice,10386|Guarana Fantastica
+```
+
+Depois execute:
 
 ```bash
 python -m src.evaluator
 ```
 
-Quando os testes estiverem organizados com Pytest:
+O resultado é salvo, por padrão, em `data/processed/evaluation_results.csv` e inclui `precision@k` aproximada por tipo de documento, `hit@k`, termos esperados, similaridade, fallback e latência.
+
+## Monitoramento atual
+
+Cada consulta gera um registro em `logs/rag_queries.jsonl` com:
+
+- pergunta original e sanitizada;
+- filtro por tipo;
+- similaridade média;
+- quantidade e tipos das fontes;
+- uso de fallback;
+- latência;
+- tokens estimados;
+- avisos e bloqueios de segurança.
+
+Resumo via terminal:
 
 ```bash
-python -m pytest -v
+python -m src.monitor
 ```
 
-Critérios avaliados:
+O resumo também está disponível em `/api/v1/monitor/summary` e apresenta total de consultas, taxa de fallback, latência e similaridade médias, média de fontes, tokens estimados e distribuição por tipo documental.
 
-- recuperação correta por ID;
-- recuperação semântica;
-- presença das fontes;
-- termos esperados na resposta;
-- estrutura do JSON retornado pela API;
-- acionamento correto do fallback;
-- latência e similaridade dos documentos recuperados.
+## Resultado técnico validado
 
-O objetivo dessa etapa não é avaliar apenas se o texto parece adequado, mas verificar se a resposta está fundamentada nos documentos corretos.
+Um dos casos de controle já utilizados consulta o `order_id 10386`. O retriever localiza o registro no arquivo `company-document-text.csv` por correspondência exata e marca o metadado `retrieval_type=exact_match`. Esse cenário demonstra o ganho da estratégia híbrida para códigos numéricos que podem ser mal representados por uma busca vetorial isolada.
 
-### Cenários principais
+As métricas globais dependem do conjunto de perguntas presente em `evaluation/questions.csv`; por isso, o projeto não fixa no README um percentual de qualidade sem associá-lo a uma execução reproduzível.
 
-| Cenário | Comportamento esperado |
-| --- | --- |
-| Pergunta com `order_id` existente | Priorizar busca exata e retornar as fontes correspondentes |
-| Pergunta descritiva | Utilizar busca semântica e retornar evidências relevantes |
-| Pergunta sem evidência | Retornar o fallback sem inventar informações |
-| Entrada com instrução maliciosa | Sanitizar ou bloquear a tentativa de prompt injection |
+## Roadmap
 
----
+| Ordem | Entrega | Importância | Status |
+| ---: | --- | --- | --- |
+| 1 | Fluxo LangGraph completo usando Redis | Essencial | ✅ Finalizado |
+| 2 | Busca híbrida para IDs + semântica | Essencial | ✅ Finalizado |
+| 3 | Respostas com fontes e fallback | Essencial | ✅ Finalizado |
+| 4 | Avaliação com perguntas controladas | Essencial | ✅ Finalizado |
+| 5 | Docker Compose com API | Essencial | ✅ Finalizado |
+| 6 | README, MkDocs, arquitetura e resultados | Essencial | 🔄 Atualização contínua |
+| 7 | Observabilidade e tracing com MLflow | Diferencial forte | 🚧 Em implementação |
 
-## 12. Resultados funcionais
+![Roadmap do projeto](./roadMap.drawio.png)
 
-Os testes realizados até esta versão demonstram:
+## Próximas evoluções
 
-- recuperação correta de documentos por identificadores conhecidos, incluindo o `order_id 10386`;
-- combinação de busca exata e semântica no mesmo retriever;
-- retorno das fontes com arquivo, tipo, linha, chunk, estratégia de busca e score quando disponíveis;
-- fallback determinístico para perguntas sem evidência suficiente;
-- possibilidade de alternar o banco vetorial por configuração;
-- execução reproduzível dos serviços locais com Docker Compose;
-- avaliação automatizada com perguntas controladas.
+- integrar o tracing do fluxo ao MLflow;
+- registrar parâmetros, modelo, scores, fontes e erros por execução;
+- comparar latência, taxa de fallback e qualidade entre configurações;
+- conectar a validação de saída do LLM Guard ao nó de geração;
+- evoluir o processamento assíncrono com Celery e Redis Broker;
+- ampliar dashboard e automação de CI/CD.
 
-Métricas quantitativas consolidadas serão acrescentadas ao projeto conforme o conjunto de avaliação for ampliado. Essa decisão evita apresentar percentuais sem uma base de testes representativa.
+## Limitações atuais
 
----
+- O tracing MLflow ainda não aparece no código analisado de `src/`.
+- A ingestão atual grava diretamente no Redis; o ChromaDB é suportado pelo retriever, mas requer uma carga compatível já existente.
+- A estimativa de tokens usa uma aproximação por caracteres, não o tokenizer específico de cada modelo.
+- A qualidade da resposta depende da extração dos documentos, dos embeddings, do limite de relevância e da cobertura das perguntas de avaliação.
+- O projeto é executado localmente; autenticação, rate limiting e publicação externa da API não fazem parte do escopo atual.
 
-## 13. Guardrails
+## Tela de monitoramento
 
-O projeto implementa controles de segurança e qualidade:
-
-- sanitização das perguntas e dos documentos ingeridos;
-- tratamento dos documentos recuperados como conteúdo não confiável;
-- prompt orientado a responder apenas com base no contexto;
-- critérios mínimos de evidência antes da geração;
-- fallback explícito quando a evidência é insuficiente;
-- inclusão obrigatória das fontes recuperadas;
-- registro de erros, consultas sem evidência e tentativas suspeitas;
-- credenciais mantidas fora do código por variáveis de ambiente.
-
-Esses controles reduzem riscos, mas não substituem políticas corporativas de segurança, autenticação, autorização e proteção de dados.
-
----
-
-## 14. Observabilidade com MLflow — próxima versão
-
-A próxima entrega adicionará tracing do LangGraph com MLflow, sem alterar as responsabilidades atuais do Redis.
-
-Escopo planejado:
-
-- visualização da execução de cada nó;
-- latência total e por etapa;
-- modelo e provedor utilizados;
-- banco vetorial selecionado;
-- documentos, metadados e scores recuperados;
-- uso do fallback;
-- tokens, quando disponibilizados pelo provedor;
-- erros e status da execução;
-- resultados das avaliações controladas;
-- comparação entre versões de prompts e configurações.
-
-O Redis continuará responsável pela busca vetorial. O MLflow será responsável por experimentos, métricas e traces.
-
----
-
-## 15. Competências demonstradas
-
-### IA generativa e RAG
-
-- LangChain e LangGraph;
-- Redis Vector Search;
-- embeddings e chunking;
-- busca híbrida;
-- engenharia de prompts;
-- Groq e Ollama;
-- respostas fundamentadas e fontes;
-- guardrails contra prompt injection.
-
-### Avaliação e observabilidade
-
-- perguntas controladas;
-- testes de recuperação e resposta;
-- similaridade e latência;
-- taxa de fallback;
-- logs estruturados;
-- planejamento de tracing com MLflow.
-
-### Engenharia
-
-- Python;
-- API e JSON;
-- Pytest;
-- Docker Compose;
-- RedisInsight;
-- Streamlit;
-- modularização e configuração por ambiente;
-- documentação com MkDocs;
-- arquitetura preparada para CI/CD.
-
-### Aplicação de negócio
-
-- redução do tempo de consulta documental;
-- rastreabilidade de evidências;
-- suporte à decisão;
-- automação de rotinas administrativas;
-- aplicação em processos de ERP, financeiro e backoffice.
-
----
-
-## 16. Storytelling do projeto — STAR
-
-### Situação
-
-Empresas lidam diariamente com grande volume de documentos administrativos. A consulta manual consome tempo, aumenta o risco de erro e dificulta a rastreabilidade da informação usada em uma decisão.
-
-### Tarefa
-
-Construir um protótipo capaz de localizar informações por identificadores e significado, responder com evidências e impedir respostas sem suporte documental.
-
-### Ação
-
-Foi criado um pipeline modular com ingestão, embeddings, Redis Vector Search, retriever híbrido, orquestração com LangGraph, guardrails, fallback, API, interface Streamlit, testes controlados e execução com Docker Compose.
-
-### Resultado
-
-O protótipo recupera documentos por ID e similaridade semântica, apresenta fontes rastreáveis e rejeita perguntas sem evidência suficiente. A arquitetura também permite substituir provedores e evoluir para observabilidade com MLflow, processamento assíncrono com Celery e CI/CD.
-
----
-
-## 17. Documentação com MkDocs
-
-Para executar a documentação localmente:
-
-```bash
-mkdocs serve
-```
-
-Acesse:
-
-```text
-http://127.0.0.1:8000
-```
-
-Para gerar a versão estática:
-
-```bash
-mkdocs build
-```
-
----
-
-## 18. Limitações atuais
-
-- o dataset utilizado é público e o projeto possui finalidade de estudo e portfólio;
-- a qualidade depende da extração textual e dos metadados disponíveis;
-- modelos locais podem apresentar maior latência em máquinas sem GPU adequada;
-- os critérios de evidência precisam ser recalibrados quando o domínio ou o modelo de embedding muda;
-- autenticação avançada, tracing com MLflow, Celery e pipeline de CI/CD ainda fazem parte do roadmap.
-
----
-
-## 19. Próximos passos
-
-- [x] Implementar o fluxo completo com LangGraph e Redis;
-- [x] Implementar busca híbrida para IDs e semântica;
-- [x] Retornar fontes e fallback controlado;
-- [x] Criar avaliação com perguntas conhecidas;
-- [x] Disponibilizar API e Docker Compose;
-- [x] Documentar arquitetura, execução e resultados;
-- [ ] Adicionar observabilidade e tracing com MLflow;
-- [ ] Ampliar dashboard e automatizar testes com CI/CD.
-
----
-
-## Autor
-
-**Alexandre Kawamorita**  
-Machine Learning Engineer | Data Scientist | Python | SQL | LLMs | Forecasting | IA Aplicada
-
-- [LinkedIn](https://www.linkedin.com/in/alexandrekawamorita/)
-- [Portfólio técnico](https://akawamorita.github.io/)
+![Roadmap](docs/img/TelaMonitoramento.png)

@@ -1,0 +1,44 @@
+version: "3.8"
+
+services:
+  api:
+    image: rag-api:1.0
+
+    env_file:
+      - .env
+
+    environment:
+      REDIS_URL: redis://rag-redis-vector:6379
+      DATA_DIR: /app/data
+
+    ports:
+      - target: 8000
+        published: 8072
+        protocol: tcp
+        mode: ingress
+
+    networks:
+      - rag-network
+
+    deploy:
+      replicas: 3
+
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: start-first
+        failure_action: rollback
+
+      rollback_config:
+        parallelism: 1
+        order: stop-first
+
+networks:
+  rag-network:
+    external: true
+    name: rag-swarm-network

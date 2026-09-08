@@ -378,7 +378,7 @@ As métricas globais dependem do conjunto de perguntas presente em `evaluation/q
 | 6 | README, MkDocs, arquitetura e resultados | Essencial | 🔄 Atualização contínua |
 | 7 | Observabilidade e tracing com MLflow | Diferencial forte | 🚧 Em implementação |
 
-![Roadmap do projeto](./roadMap.drawio.png)
+![Roadmap do projeto](docs/img/roadMap.png)
 
 ## Próximas evoluções
 

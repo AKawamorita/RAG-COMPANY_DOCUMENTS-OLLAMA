@@ -20,8 +20,6 @@ services:
         target: /app/data
         read_only: true
 
-    cls
-
     networks:
       - rag-network
 
